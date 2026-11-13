@@ -1,5 +1,7 @@
 import io
 import re
+from pathlib import Path
+import pytest
 from fastapi.testclient import TestClient
 
 from application.backend.main import app
@@ -91,7 +93,11 @@ def test_validation_errors():
     assert "takes_twins must be" in text and "duplicate email" in text and "match key" in text
 
 
-def test_api_end_to_end(tmp_path):
+def test_api_end_to_end(monkeypatch):
+    def reject_result_write(*args, **kwargs):
+        pytest.fail("Matching must return results without saving them to disk.")
+
+    monkeypatch.setattr(Path, "write_text", reject_result_write)
     client = TestClient(app)
     h = "name,email," + ",".join(f"rank_{i}" for i in range(1, 11))
     bigs = (h + ",takes_twins\nBig Z,z@x.edu,Lit A,,,,,,,,,,no\n").encode()
@@ -99,7 +105,8 @@ def test_api_end_to_end(tmp_path):
     files = {"bigs_file": ("b.csv", io.BytesIO(bigs)), "littles_file": ("l.csv", io.BytesIO(lits))}
     res = client.post("/match", files=files)
     assert res.status_code == 200 and res.json()["summary"]["matched_littles"] == 1
-    assert client.get("/results/latest").status_code == 200
+    assert client.get("/results/latest").status_code == 404
+    assert client.get("/api/results/latest").status_code == 404
     assert client.get("/templates/bigs.csv").text.strip().endswith("takes_twins")
 
 

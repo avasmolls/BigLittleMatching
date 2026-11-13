@@ -13,8 +13,6 @@ from application.backend.matching import run_matching
 from application.backend.validation import RANK_COUNT, cross_check, parse_people
 
 BASE = Path(__file__).parent
-DATA_DIR = BASE / "data"
-LAST_RESULT = DATA_DIR / "last_result.json"   # swap for a database later
 MAX_BYTES = 2 * 1024 * 1024
 
 app = FastAPI(title="Big/Little Matching")
@@ -77,16 +75,7 @@ async def match(bigs_file: UploadFile = File(...), littles_file: UploadFile = Fi
         raise HTTPException(422, detail={"errors": errors, "warnings": warnings})
     result = run_matching(bigs, littles, locked_pairs)
     result["warnings"] = warnings
-    DATA_DIR.mkdir(exist_ok=True)
-    LAST_RESULT.write_text(json.dumps(result, indent=2))
     return result
-
-
-@api.get("/results/latest")
-def latest():
-    if not LAST_RESULT.exists():
-        raise HTTPException(404, "No matching has been run yet.")
-    return json.loads(LAST_RESULT.read_text())
 
 
 @api.get("/templates/{role}.csv")

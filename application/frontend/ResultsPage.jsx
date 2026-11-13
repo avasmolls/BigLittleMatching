@@ -1,7 +1,8 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useReducer, useRef, useState } from "react";
 import { downloadCSV } from "../backend/exportCsv.js";
 import { filterResults } from "./resultFilters.js";
 import WorkflowSteps from "./WorkflowSteps.jsx";
+import { createReviewState, reviewReducer, reviewSignature } from "./reviewHistory.js";
 
 // CSS-only tooltip: shows on hover and keyboard focus.
 const Tip = ({ text, children }) => {
@@ -29,29 +30,49 @@ const PersonIdentity = ({ name, role, reason }) => {
   );
 };
 
-const init = result => ({
-  pairs: result.matches.flatMap(m =>
-    m.littles.map(l => ({ big: m.big.email, little: l.email, locked: !!l.locked, reason: l.reason }))),
-  notes: Object.fromEntries([...result.unmatched_bigs, ...result.unmatched_littles].map(u => [u.email, u.reason])),
-});
-
 export default function ResultsPage({ result, onBack, onRerun }) {
   const { people } = result;
-  const [{ pairs, notes }, setS] = useState(() => init(result));
+  const [review, dispatch] = useReducer(reviewReducer, result, createReviewState);
+  const { pairs, notes } = review.current;
+  const signature = reviewSignature(review.current);
+  const hasUnexportedChanges = signature !== review.checkpoint;
+  const hasExported = signature === review.exported;
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
   const [notice, setNotice] = useState(null);
-  const [hasExported, setHasExported] = useState(false);
+  const discardDialog = useRef(null);
+  const lastResult = useRef(result);
 
-  useEffect(() => { setS(init(result)); setHasExported(false); }, [result]);
+  useEffect(() => {
+    if (lastResult.current !== result) {
+      dispatch({ type: "recalculate", result });
+      lastResult.current = result;
+    }
+  }, [result]);
+  useEffect(() => {
+    if (!hasUnexportedChanges) return;
+    const warnOnLeave = event => { event.preventDefault(); event.returnValue = ""; };
+    window.addEventListener("beforeunload", warnOnLeave);
+    return () => window.removeEventListener("beforeunload", warnOnLeave);
+  }, [hasUnexportedChanges]);
   useEffect(() => {
     if (!notice) return;
-    const timer = setTimeout(() => setNotice(null), 4500);
+    const timer = setTimeout(() => setNotice(null), notice.undo ? 10000 : 4500);
     return () => clearTimeout(timer);
   }, [notice]);
-  const confirm = text => setNotice({ text });
+  const confirm = (text, undo = false) => setNotice({ text, undo });
+  const undoChange = () => {
+    if (busy || !review.undo) return;
+    dispatch({ type: "undo" });
+    setMsg("");
+    confirm("Last match change undone.");
+  };
+  const startNewUpload = () => {
+    if (hasUnexportedChanges) discardDialog.current.showModal();
+    else onBack();
+  };
 
   const rank = (role, owner, target) => 1 + people[role][owner].ranked.findIndex(r => r.email === target); // 0 = not ranked
   const rk = n => (n ? `#${n}` : "not ranked");
@@ -71,26 +92,23 @@ export default function ResultsPage({ result, onBack, onRerun }) {
     setMsg("");
     const rest = pairs.filter(p => p.little !== l);
     if (!b) {
-      setS({ pairs: rest, notes: { ...notes, [l]: "Unmatched manually by reviewer." } });
-      setHasExported(false);
-      confirm(`${people.littles[l].name} is now unmatched.`);
+      dispatch({ type: "change", current: { pairs: rest, notes: { ...notes, [l]: "Unmatched manually by reviewer." } } });
+      confirm(`${people.littles[l].name} is now unmatched.`, true);
       return;
     }
     const n = rest.filter(p => p.big === b).length;
     if (n >= 2 || (n === 1 && !people.bigs[b].takes_twins)) return setMsg(`${people.bigs[b].name} cannot take another little.`);
     const reason = `Manually assigned by reviewer. ${people.bigs[b].name} ranked ${people.littles[l].name}: ${rk(rank("bigs", b, l))}; ` +
       `${people.littles[l].name} ranked ${people.bigs[b].name}: ${rk(rank("littles", l, b))}.`;
-    setS({ notes, pairs: [...rest, { big: b, little: l, locked: true, reason }] }); // manual moves are auto-locked
-    setHasExported(false);
-    confirm(`${people.littles[l].name} ${pairOf(l) ? "moved" : "assigned"} to ${people.bigs[b].name}. Match locked.`);
+    dispatch({ type: "change", current: { notes, pairs: [...rest, { big: b, little: l, locked: true, reason }] } }); // manual moves are auto-locked
+    confirm(`${people.littles[l].name} ${pairOf(l) ? "moved" : "assigned"} to ${people.bigs[b].name}. Match locked.`, true);
   };
   const toggleLock = l => {
     if (busy) return;
     setMsg("");
     const wasLocked = pairOf(l).locked;
-    setS({ notes, pairs: pairs.map(p => (p.little === l ? { ...p, locked: !p.locked } : p)) });
-    setHasExported(false);
-    confirm(`Match for ${people.littles[l].name} ${wasLocked ? "unlocked" : "locked"}.`);
+    dispatch({ type: "change", current: { notes, pairs: pairs.map(p => (p.little === l ? { ...p, locked: !p.locked } : p)) } });
+    confirm(`Match for ${people.littles[l].name} ${wasLocked ? "unlocked" : "locked"}.`, true);
   };
 
   const rerun = async () => {
@@ -112,7 +130,7 @@ export default function ResultsPage({ result, onBack, onRerun }) {
     ...unBigs.map(b => ["UNMATCHED_BIG", people.bigs[b].name, b, "", "", "", "", notes[b] || ""]),
     ...unLittles.map(l => ["UNMATCHED_LITTLE", "", "", people.littles[l].name, l, "", "", notes[l] || ""]),
     ]);
-    setHasExported(true);
+    dispatch({ type: "export" });
     confirm("CSV download started. Your export includes all results.");
   };
 
@@ -139,6 +157,10 @@ export default function ResultsPage({ result, onBack, onRerun }) {
   const renderUnmatched = (id, role) => (
     <div className="card unmatched-card" key={id}>
       <PersonIdentity name={people[role][id].name} role={role === "bigs" ? "Big" : "Little"} reason={notes[id] || "Unmatched"} />
+      <details className="match-explanation">
+        <summary>Why unmatched?</summary>
+        <p>{notes[id] || "No match is currently assigned."}</p>
+      </details>
       <div className="assignment-controls">
         {role === "littles"
           ? <LittleSelect little={id} />
@@ -169,7 +191,8 @@ export default function ResultsPage({ result, onBack, onRerun }) {
         <p>Make any adjustments, lock the matches you want to keep, then export your results.</p>
       </header>
       <div className="bar results-toolbar">
-        <button className="new-upload" onClick={onBack} disabled={busy}>← New upload</button>
+        <button className="new-upload" onClick={startNewUpload} disabled={busy}>← New upload</button>
+        {review.undo && <button className="undo-action" disabled={busy} onClick={undoChange}>Undo last change</button>}
         <div className="recalculate-action">
           <button onClick={rerun} disabled={busy}>{busy && <span className="spinner" aria-hidden="true" />}{busy ? "Recalculating…" : "Recalculate unlocked matches"}</button>
           <small>{lockedCount} locked {lockedCount === 1 ? "match stays" : "matches stay"} in place</small>
@@ -177,8 +200,9 @@ export default function ResultsPage({ result, onBack, onRerun }) {
         <button className="primary export-action" onClick={exportCsv} disabled={busy}>Export CSV <span aria-hidden="true">↓</span></button>
       </div>
       <div className="feedback-status" role="status" aria-live="polite" aria-atomic="true">
-        {busy ? <div className="box loading-feedback"><span className="spinner" aria-hidden="true" />Recalculating unlocked matches. Your locked matches will be kept.</div> : notice && <div className="box good confirmation">{notice.text}</div>}
+        {busy ? <div className="box loading-feedback"><span className="spinner" aria-hidden="true" />Recalculating unlocked matches. Your locked matches will be kept.</div> : notice && <div className="box good confirmation"><span>{notice.text}</span>{notice.undo && review.undo && <button onClick={undoChange}>Undo</button>}</div>}
       </div>
+      {hasUnexportedChanges && <p className="unexported-hint">You have changes that haven’t been exported yet.</p>}
       <dl className="summary-cards" aria-label="Matching summary">
         <div className="summary-card summary-matched">
           <dt>Matched littles</dt>
@@ -193,7 +217,9 @@ export default function ResultsPage({ result, onBack, onRerun }) {
           <dd>{unBigs.length}<span>without a match</span></dd>
         </div>
       </dl>
-      <p className="results-hint">Hover or focus a name to see why they were matched or left unmatched.</p>
+      <p className="results-hint">Hover a name or open an explanation to see the reasoning.</p>
+      {bigEmails.length + littleEmails.length > 0 && !unBigs.length && !unLittles.length && <div className="box good completion-banner"><strong>Everyone is matched!</strong><span>Review your pairs, then export when you’re ready.</span></div>}
+      {littleEmails.length > 0 && !unLittles.length && unBigs.length > 0 && <div className="box good completion-banner"><strong>Every little has a match!</strong><span>{unBigs.length} {unBigs.length === 1 ? "big is" : "bigs are"} still available.</span></div>}
       {msg && <div className="box err" role="alert">{msg}</div>}
       {result.warnings?.length > 0 && <details className="box warn"><summary>{result.warnings.length} upload warnings</summary><ul>{result.warnings.map((w, i) => <li key={i}>{w}</li>)}</ul></details>}
 
@@ -223,6 +249,11 @@ export default function ResultsPage({ result, onBack, onRerun }) {
             {littlesOf(b).map(p => (
               <div className="match-little" key={p.little}>
                 <PersonIdentity name={people.littles[p.little].name} role="Little" reason={p.reason} />
+                <p className="preference-ranks">Big’s choice {rk(rank("bigs", b, p.little))} <span aria-hidden="true">·</span> Little’s choice {rk(rank("littles", p.little, b))}</p>
+                <details className="match-explanation">
+                  <summary>Why this match?</summary>
+                  <p>{p.reason}</p>
+                </details>
                 <div className="assignment-controls">
                   <button disabled={busy} className={`lock-control ${p.locked ? "is-locked" : ""}`} aria-pressed={p.locked} aria-label={`${p.locked ? "Unlock" : "Lock"} match for ${people.littles[p.little].name}`} title={p.locked ? "Locked: recalculating won't change this match" : "Lock this match to keep it when recalculating"} onClick={() => toggleLock(p.little)}>
                     <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -247,8 +278,20 @@ export default function ResultsPage({ result, onBack, onRerun }) {
         <h2>Unmatched littles ({visibleUnLittles.length})</h2>
         <div className="cards">{visibleUnLittles.map(l => renderUnmatched(l, "littles"))}</div>
       </>}
-      {visibleCount === 0 && <div className="empty-results"><h2>No results to show</h2><p>{query || filter !== "all" ? "Try a different name or clear your filters." : "There are no people in these results."}</p></div>}
+      {visibleCount === 0 && <div className="empty-results">
+        <h2>{query.trim() ? "No names found" : filter === "twins" ? "No twin matches yet" : filter === "locked" ? "No locked matches yet" : filter === "unmatched" && bigEmails.length + littleEmails.length > 0 ? "Everyone is matched!" : "No results to show"}</h2>
+        <p>{query.trim() ? "Try another name or clear your search and filters." : filter === "twins" ? "Twin matches appear when a big is matched with two littles. A big must be willing to take twins." : filter === "locked" ? "Use “Lock match” on a pair to keep it in place when recalculating." : filter === "unmatched" && bigEmails.length + littleEmails.length > 0 ? "There are no unmatched people to review. You can return to all results or export your pairs." : "There are no people in these results."}</p>
+      </div>}
       </div>
+      <dialog ref={discardDialog} className="discard-dialog" aria-labelledby="discard-title" aria-describedby="discard-description">
+        <h2 id="discard-title">Start a new upload?</h2>
+        <p id="discard-description">Your match changes haven’t been exported. Starting a new upload will clear these results.</p>
+        <div className="dialog-actions">
+          <button autoFocus onClick={() => discardDialog.current.close()}>Keep reviewing</button>
+          <button onClick={() => { exportCsv(); discardDialog.current.close(); onBack(); }}>Export CSV & start new</button>
+          <button className="discard-action" onClick={onBack}>Discard & start new</button>
+        </div>
+      </dialog>
     </main>
   );
 }

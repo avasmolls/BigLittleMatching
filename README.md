@@ -15,6 +15,10 @@ venv/bin/python -m uvicorn application.backend.main:app --reload
 Open http://127.0.0.1:8000. Rebuild after frontend changes. Generated static files
 are ignored by Git, so build them after cloning and before running backend tests.
 
+Each person runs the app on their own computer. Matching results are returned to
+the browser without being saved by the backend. Export a CSV to keep your results
+before closing or refreshing the page.
+
 For frontend development, run `npm --prefix application/backend run dev` in a
 second terminal and open the URL Vite prints. Vite forwards `/api` requests to
 FastAPI on port 8000. FastAPI also serves `/api` routes for the built frontend;
