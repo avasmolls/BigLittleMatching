@@ -1,26 +1,52 @@
-"""FastAPI backend. Run:  uvicorn main:app --reload"""
+"""FastAPI backend. Run:  uvicorn main:app --reload   then open http://127.0.0.1:8000"""
 import csv
 import io
 import json
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 
 from matching import run_matching
 from validation import RANK_COUNT, cross_check, parse_people
 
-DATA_DIR = Path(__file__).parent / "data"
+BASE = Path(__file__).parent
+DATA_DIR = BASE / "data"
 LAST_RESULT = DATA_DIR / "last_result.json"   # swap for a database later
+MAX_BYTES = 2 * 1024 * 1024
 
 app = FastAPI(title="Big/Little Matching")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
+@app.get("/", include_in_schema=False)
+def index():
+    return FileResponse(BASE / "static" / "index.html")
+
+
+async def _read_upload(f: UploadFile, label: str):
+    """Basic file checks. Returns (bytes, error)."""
+    if not (f.filename or "").lower().endswith((".csv", ".txt")):
+        return None, f"{label} file '{f.filename}' is not a .csv file (export from Excel/Sheets as CSV)."
+    raw = await f.read()
+    if len(raw) > MAX_BYTES:
+        return None, f"{label} file is larger than {MAX_BYTES // 1024 // 1024} MB."
+    return raw, None
+
+
+def _preview(people, n=5):
+    return [{"name": p.name, "email": p.email, "ranked": len(p.prefs), "takes_twins": p.takes_twins}
+            for p in people[:n]]
+
+
 async def _load(bigs_file: UploadFile, littles_file: UploadFile):
-    bigs, b_err, b_warn = parse_people(await bigs_file.read(), "big")
-    littles, l_err, l_warn = parse_people(await littles_file.read(), "little")
+    b_raw, b_bad = await _read_upload(bigs_file, "Bigs")
+    l_raw, l_bad = await _read_upload(littles_file, "Littles")
+    if b_bad or l_bad:
+        return [], [], [e for e in (b_bad, l_bad) if e], []
+    bigs, b_err, b_warn = parse_people(b_raw, "big")
+    littles, l_err, l_warn = parse_people(l_raw, "little")
     errors, warnings = b_err + l_err, b_warn + l_warn
     if not errors:
         warnings += cross_check(bigs, littles)
@@ -32,15 +58,21 @@ async def validate(bigs_file: UploadFile = File(...), littles_file: UploadFile =
     """Check both CSVs without running the match."""
     bigs, littles, errors, warnings = await _load(bigs_file, littles_file)
     return {"valid": not errors, "errors": errors, "warnings": warnings,
-            "counts": {"bigs": len(bigs), "littles": len(littles)}}
+            "counts": {"bigs": len(bigs), "littles": len(littles)},
+            "preview": {"bigs": _preview(bigs), "littles": _preview(littles)}}
 
 
 @app.post("/match")
-async def match(bigs_file: UploadFile = File(...), littles_file: UploadFile = File(...)):
+async def match(bigs_file: UploadFile = File(...), littles_file: UploadFile = File(...),
+                locked: str = Form("[]")):
     bigs, littles, errors, warnings = await _load(bigs_file, littles_file)
+    try:
+        locked_pairs = json.loads(locked)
+    except ValueError:
+        raise HTTPException(422, detail={"errors": ["'locked' must be valid JSON."], "warnings": []})
     if errors:
         raise HTTPException(422, detail={"errors": errors, "warnings": warnings})
-    result = run_matching(bigs, littles)
+    result = run_matching(bigs, littles, locked_pairs)
     result["warnings"] = warnings
     DATA_DIR.mkdir(exist_ok=True)
     LAST_RESULT.write_text(json.dumps(result, indent=2))

@@ -10,6 +10,7 @@ class Pair:
     little: object
     br: int  # rank the big gave the little
     lr: int  # rank the little gave the big
+    locked: bool = False
 
     @property
     def tier(self):
@@ -29,7 +30,7 @@ def _p(person):
     return {"name": person.name, "email": person.email}
 
 
-def run_matching(bigs, littles):
+def run_matching(bigs, littles, locked=None):
     little_by_key = {l.key: l for l in littles}
 
     # Rule 2: only mutual rankings are candidate pairs.
@@ -48,6 +49,18 @@ def run_matching(bigs, littles):
         big_littles.setdefault(p.big.key, []).append((p, is_twin))
         little_big[p.little.key] = p
 
+    # Reviewer-locked pairs are placed first and never changed by the algorithm.
+    big_by_email = {b.email.lower(): b for b in bigs}
+    little_by_email = {l.email.lower(): l for l in littles}
+    for item in locked or []:
+        b = big_by_email.get(str(item.get("big", "")).lower())
+        l = little_by_email.get(str(item.get("little", "")).lower())
+        if not b or not l or l.key in little_big or len(big_littles.get(b.key, [])) >= 2:
+            continue
+        br = b.prefs.index(l.key) + 1 if l.key in b.prefs else 0
+        lr = l.prefs.index(b.key) + 1 if b.key in l.prefs else 0
+        assign(Pair(b, l, br, lr, True), len(big_littles.get(b.key, [])) == 1)
+
     # Pass 1: one-to-one matches, best tier first.
     for p in pairs:
         if p.big.key not in big_littles and p.little.key not in little_big:
@@ -60,6 +73,10 @@ def run_matching(bigs, littles):
             assign(p, True)
 
     def reason(p, is_twin):
+        if p.locked:
+            rk = lambda n: f"#{n}" if n else "not ranked"
+            return (f"Locked by reviewer. {p.big.name} ranked {p.little.name}: {rk(p.br)}; "
+                    f"{p.little.name} ranked {p.big.name}: {rk(p.lr)}.")
         base = (f"{p.big.name} ranked {p.little.name} #{p.br}; "
                 f"{p.little.name} ranked {p.big.name} #{p.lr}.")
         if is_twin:
@@ -83,11 +100,11 @@ def run_matching(bigs, littles):
             "big": _p(b),
             "takes_twins": b.takes_twins,
             "is_twin_match": len(entries) == 2,
-            "littles": [{**_p(p.little), "is_twin": tw, "tier": p.tier,
+            "littles": [{**_p(p.little), "is_twin": tw, "locked": p.locked, "tier": p.tier if p.br and p.lr else None,
                          "big_rank_of_little": p.br, "little_rank_of_big": p.lr,
                          "reason": reason(p, tw)} for p, tw in entries],
         })
-    matches.sort(key=lambda m: min(l["tier"] for l in m["littles"]))
+    matches.sort(key=lambda m: min(l["tier"] or 0 for l in m["littles"]))
 
     def unmatched_info(person, role):
         mine = [p for p in pairs if (p.big if role == "big" else p.little) is person]
@@ -118,13 +135,24 @@ def run_matching(bigs, littles):
     unmatched_bigs = [unmatched_info(b, "big") for b in bigs if b.key not in big_littles]
     unmatched_littles = [unmatched_info(l, "little") for l in littles if l.key not in little_big]
 
-    top3 = sum(1 for p in little_big.values() if p.lr <= 3)
+    top3 = sum(1 for p in little_big.values() if p.lr and p.lr <= 3)
     tier_counts = {}
-    for p in little_big.values():
+    for p in (q for q in little_big.values() if q.br and q.lr):
         label = f"{min(p.br, p.lr)}-{max(p.br, p.lr)}"
         tier_counts[label] = tier_counts.get(label, 0) + 1
 
+    big_by_key = {b.key: b for b in bigs}
+
+    def person_info(person, other_by_key):
+        return {"name": person.name, "takes_twins": person.takes_twins,
+                "ranked": [{"name": n, "email": other_by_key[k].email if k in other_by_key else None}
+                           for k, n in zip(person.prefs, person.pref_names)]}
+
+    people = {"bigs": {b.email: person_info(b, little_by_key) for b in bigs},
+              "littles": {l.email: person_info(l, big_by_key) for l in littles}}
+
     return {
+        "people": people,
         "matches": matches,
         "unmatched_bigs": unmatched_bigs,
         "unmatched_littles": unmatched_littles,

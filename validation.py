@@ -1,4 +1,5 @@
 """CSV parsing + validation. Turns uploaded CSV bytes into Person objects."""
+import csv
 import io
 import re
 import unicodedata
@@ -31,9 +32,13 @@ def _clean(text) -> str:
 def name_key(name) -> str:
     """First initial + last name, lowercase, accents/special characters/whitespace removed.
     'Katie O'Neil-Smith' -> 'koneilsmith'. The last word is the last name and the
-    first word supplies the initial. A one-word entry has no initial, so it
+    first word supplies the initial. 'Smith, Katie' also works. A one-word entry has no initial, so it
     becomes just a last name (and will not match anyone)."""
-    parts = str(name).strip().split()
+    name = str(name).strip()
+    if "," in name:  # "Smith, Katie" -> "Katie Smith"
+        last_part, first_part = name.split(",", 1)
+        name = f"{first_part} {last_part}"
+    parts = name.split()
     if not parts:
         return ""
     last = _clean(parts[-1])
@@ -63,15 +68,39 @@ def _find_columns(columns):
     return name_col, email_col, twins_col, ranks
 
 
+def _decode(raw: bytes) -> str:
+    for enc in ("utf-8-sig", "cp1252"):  # cp1252 = older Excel "CSV" exports
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("latin-1")
+
+
+def _read_table(raw: bytes):
+    """Decode, sniff the delimiter (comma, semicolon or tab) and load as all-text. -> (df, error)"""
+    text = _decode(raw).replace("\xa0", " ")
+    if not text.strip():
+        return None, "file is empty."
+    header = text.splitlines()[0]
+    delim = max(",;\t", key=header.count)
+    try:
+        df = pd.read_csv(io.StringIO(text), sep=delim, dtype=str, keep_default_na=False)
+    except Exception as exc:  # ragged rows, unclosed quotes...
+        return None, f"could not read CSV ({exc})"
+    # drop empty trailing columns that spreadsheet exports add
+    junk = [c for c in df.columns if str(c).startswith("Unnamed") and (df[c].str.strip() == "").all()]
+    return df.drop(columns=junk), None
+
+
 def parse_people(raw: bytes, role: str):
     """Parse one CSV. Returns (people, errors, warnings). role is 'big' or 'little'."""
     label = f"{role.capitalize()}s file"
     errors, warnings, people = [], [], []
 
-    try:
-        df = pd.read_csv(io.BytesIO(raw), dtype=str, keep_default_na=False, encoding="utf-8-sig")
-    except Exception as exc:  # empty file, bad encoding, malformed rows...
-        return [], [f"{label}: could not read CSV ({exc})"], []
+    df, err = _read_table(raw)
+    if err:
+        return [], [f"{label}: {err}"], []
 
     df.columns = [_norm_header(c) for c in df.columns]
     df = df.apply(lambda s: s.str.strip())
@@ -86,7 +115,9 @@ def parse_people(raw: bytes, role: str):
     if missing:
         errors.append(f"{label}: missing rank columns: {', '.join(missing)}.")
     if role == "big" and not twins_col:
-        errors.append(f"{label}: missing 'takes_twins' column.")
+        errors.append(f"{label}: missing 'takes_twins' column. Is this the littles file?")
+    if role == "little" and twins_col:
+        warnings.append(f"{label}: has a 'takes_twins' column (ignored). Is this the bigs file?")
     if errors:
         return [], errors, warnings
     if df.empty:

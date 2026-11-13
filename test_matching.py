@@ -100,3 +100,38 @@ def test_api_end_to_end(tmp_path):
     assert res.status_code == 200 and res.json()["summary"]["matched_littles"] == 1
     assert client.get("/results/latest").status_code == 200
     assert client.get("/templates/bigs.csv").text.strip().endswith("takes_twins")
+
+
+# ---- upload / parsing hardening ----
+HDR = "name,email," + ",".join(f"rank_{i}" for i in range(1, 11))
+
+
+def test_semicolon_cp1252_and_last_first():
+    text = HDR.replace(",", ";") + ";takes_twins\nZoë Núñez;z@x.edu;" + "Lee, Ann;" + ";" * 9 + "yes\n"
+    out, errors, _ = parse_people(text.encode("cp1252"), "big")
+    assert not errors, errors
+    assert out[0].key == "znunez" and out[0].prefs == ["alee"] and out[0].takes_twins
+
+
+def test_trailing_unnamed_columns_and_blank_rows_ignored():
+    text = HDR + ",,\nAnn Lee,a@x.edu,Bo Kim,,,,,,,,,\n,,,,,,,,,,,,\n"
+    out, errors, _ = parse_people(text.encode(), "little")
+    assert not errors and len(out) == 1
+
+
+def test_swapped_files_hints():
+    twins = HDR + ",takes_twins\nAnn Lee,a@x.edu,,,,,,,,,,,no\n"
+    _, errors, _ = parse_people(HDR.encode() + b"\n", "big")
+    assert any("littles file" in e for e in errors)
+    _, _, warns = parse_people(twins.encode(), "little")
+    assert any("bigs file" in w for w in warns)
+
+
+def test_api_rejects_non_csv_and_serves_page():
+    c = TestClient(app)
+    r = c.post("/validate", files={"bigs_file": ("b.xlsx", io.BytesIO(b"x")),
+                                   "littles_file": ("l.csv", io.BytesIO(HDR.encode()))})
+    assert r.json()["valid"] is False and "not a .csv" in r.json()["errors"][0]
+    assert c.get("/").status_code == 200
+    assert c.post("/validate", files={"bigs_file": ("b.csv", io.BytesIO(b"")),
+                                      "littles_file": ("l.csv", io.BytesIO(b""))}).json()["errors"][0].endswith("empty.")
