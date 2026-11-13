@@ -8,8 +8,8 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 
-from matching import run_matching
-from validation import RANK_COUNT, cross_check, parse_people
+from application.backend.matching import run_matching
+from application.backend.validation import RANK_COUNT, cross_check, parse_people
 
 BASE = Path(__file__).parent
 DATA_DIR = BASE / "data"

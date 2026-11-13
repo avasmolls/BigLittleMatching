@@ -16,5 +16,6 @@ export async function runMatch(bigs, littles, locked) {
   const r = await fetch("/api/match", { method: "POST", body: form(bigs, littles, locked) });
   const d = await r.json();
   if (!r.ok) throw d.detail && d.detail.errors ? d.detail : { errors: [String(d.detail || "Server error")], warnings: [] };
+  if (!d.people) throw { errors: ["The backend is out of date (no 'people' in the response). Restart uvicorn using the latest matching.py and main.py."], warnings: [] };
   return d;
 }

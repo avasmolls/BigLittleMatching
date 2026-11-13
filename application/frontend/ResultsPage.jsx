@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { downloadCSV } from "./exportCsv.js";
+import { downloadCSV } from "../backend/exportCsv.js";
 
 // CSS-only tooltip: shows on hover and keyboard focus.
 const Tip = ({ text, children }) => (

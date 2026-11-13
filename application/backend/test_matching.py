@@ -1,9 +1,9 @@
 import io
 from fastapi.testclient import TestClient
 
-from main import app
-from matching import run_matching
-from validation import name_key, parse_people
+from application.backend.main import app
+from application.backend.matching import run_matching
+from application.backend.validation import name_key, parse_people
 
 
 def people(role, rows):
