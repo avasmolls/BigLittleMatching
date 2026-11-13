@@ -4,6 +4,7 @@ import io
 import re
 import unicodedata
 from dataclasses import dataclass, field
+from typing import cast
 
 import pandas as pd
 
@@ -99,7 +100,7 @@ def parse_people(raw: bytes, role: str):
     errors, warnings, people = [], [], []
 
     df, err = _read_table(raw)
-    if err:
+    if df is None:
         return [], [f"{label}: {err}"], []
 
     df.columns = [_norm_header(c) for c in df.columns]
@@ -118,14 +119,15 @@ def parse_people(raw: bytes, role: str):
         errors.append(f"{label}: missing 'takes_twins' column. Is this the littles file?")
     if role == "little" and twins_col:
         warnings.append(f"{label}: has a 'takes_twins' column (ignored). Is this the bigs file?")
-    if errors:
+    if errors or name_col is None or email_col is None:
         return [], errors, warnings
     if df.empty:
         return [], [f"{label}: no data rows found."], warnings
 
     seen_keys, seen_emails = {}, {}
     for idx, row in df.iterrows():
-        rowno = idx + 2  # header is row 1
+        # read_csv creates an integer RangeIndex, preserved when blank rows are dropped.
+        rowno = cast(int, idx) + 2  # header is row 1
         where = f"{label}, row {rowno}"
         name, email = row[name_col], row[email_col]
         key = name_key(name)
@@ -144,7 +146,7 @@ def parse_people(raw: bytes, role: str):
         seen_keys.setdefault(key, rowno)
 
         takes_twins = False
-        if role == "big":
+        if role == "big" and twins_col is not None:
             val = row[twins_col].lower()
             if val in TRUE_VALUES:
                 takes_twins = True

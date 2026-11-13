@@ -1,4 +1,5 @@
 import io
+import re
 from fastapi.testclient import TestClient
 
 from application.backend.main import app
@@ -135,3 +136,22 @@ def test_api_rejects_non_csv_and_serves_page():
     assert c.get("/").status_code == 200
     assert c.post("/validate", files={"bigs_file": ("b.csv", io.BytesIO(b"")),
                                       "littles_file": ("l.csv", io.BytesIO(b""))}).json()["errors"][0].endswith("empty.")
+
+
+def test_built_frontend_assets_and_api_prefix():
+    client = TestClient(app)
+    page = client.get("/")
+    assert page.status_code == 200
+    assets = re.findall(r'(?:src|href)="(/assets/[^"]+)"', page.text)
+    assert any(path.endswith(".js") for path in assets)
+    assert any(path.endswith(".css") for path in assets)
+    for path in assets:
+        assert client.get(path).status_code == 200
+    assert client.get("/api/templates/bigs.csv").text == client.get("/templates/bigs.csv").text
+    response = client.post("/api/validate", files={
+        "bigs_file": ("b.csv", io.BytesIO(b"")),
+        "littles_file": ("l.csv", io.BytesIO(b"")),
+    })
+    assert response.status_code == 200
+    assert response.json()["valid"] is False
+    assert response.json()["errors"][0].endswith("empty.")

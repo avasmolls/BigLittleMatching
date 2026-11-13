@@ -4,9 +4,10 @@ import io
 import json
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
+from fastapi.staticfiles import StaticFiles
 
 from application.backend.matching import run_matching
 from application.backend.validation import RANK_COUNT, cross_check, parse_people
@@ -17,7 +18,9 @@ LAST_RESULT = DATA_DIR / "last_result.json"   # swap for a database later
 MAX_BYTES = 2 * 1024 * 1024
 
 app = FastAPI(title="Big/Little Matching")
+api = APIRouter()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.mount("/assets", StaticFiles(directory=BASE / "static" / "assets", check_dir=False), name="assets")
 
 
 @app.get("/", include_in_schema=False)
@@ -53,7 +56,7 @@ async def _load(bigs_file: UploadFile, littles_file: UploadFile):
     return bigs, littles, errors, warnings
 
 
-@app.post("/validate")
+@api.post("/validate")
 async def validate(bigs_file: UploadFile = File(...), littles_file: UploadFile = File(...)):
     """Check both CSVs without running the match."""
     bigs, littles, errors, warnings = await _load(bigs_file, littles_file)
@@ -62,7 +65,7 @@ async def validate(bigs_file: UploadFile = File(...), littles_file: UploadFile =
             "preview": {"bigs": _preview(bigs), "littles": _preview(littles)}}
 
 
-@app.post("/match")
+@api.post("/match")
 async def match(bigs_file: UploadFile = File(...), littles_file: UploadFile = File(...),
                 locked: str = Form("[]")):
     bigs, littles, errors, warnings = await _load(bigs_file, littles_file)
@@ -79,14 +82,14 @@ async def match(bigs_file: UploadFile = File(...), littles_file: UploadFile = Fi
     return result
 
 
-@app.get("/results/latest")
+@api.get("/results/latest")
 def latest():
     if not LAST_RESULT.exists():
         raise HTTPException(404, "No matching has been run yet.")
     return json.loads(LAST_RESULT.read_text())
 
 
-@app.get("/templates/{role}.csv")
+@api.get("/templates/{role}.csv")
 def template(role: str):
     if role not in ("bigs", "littles"):
         raise HTTPException(404, "Use 'bigs' or 'littles'.")
@@ -97,3 +100,7 @@ def template(role: str):
     csv.writer(buf).writerow(header)
     return Response(buf.getvalue(), media_type="text/csv",
                     headers={"Content-Disposition": f"attachment; filename={role}_template.csv"})
+
+
+app.include_router(api)
+app.include_router(api, prefix="/api")
