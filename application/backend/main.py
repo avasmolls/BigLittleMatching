@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from application.backend.matching import run_matching
 from application.backend.validation import RANK_COUNT, cross_check, parse_people
+from application.backend.resume import parse_saved_results, restore_results
 
 BASE = Path(__file__).parent
 MAX_BYTES = 2 * 1024 * 1024
@@ -55,12 +56,41 @@ async def _load(bigs_file: UploadFile, littles_file: UploadFile):
 
 
 @api.post("/validate")
-async def validate(bigs_file: UploadFile = File(...), littles_file: UploadFile = File(...)):
+async def validate(bigs_file: UploadFile = File(...), littles_file: UploadFile = File(...),
+                   results_file: UploadFile | None = File(None)):
     """Check both CSVs without running the match."""
     bigs, littles, errors, warnings = await _load(bigs_file, littles_file)
+    saved_summary = None
+    if results_file is not None:
+        raw, error = await _read_upload(results_file, "Saved results")
+        if error:
+            errors.append(error)
+        elif not errors:
+            rows, saved_errors = parse_saved_results(raw, bigs, littles)
+            errors += saved_errors
+            if not saved_errors:
+                saved_summary = {"matched_littles": sum(row["status"] == "MATCHED" for row in rows),
+                                 "locked_matches": sum(row["locked"] for row in rows)}
     return {"valid": not errors, "errors": errors, "warnings": warnings,
             "counts": {"bigs": len(bigs), "littles": len(littles)},
-            "preview": {"bigs": _preview(bigs), "littles": _preview(littles)}}
+            "preview": {"bigs": _preview(bigs), "littles": _preview(littles)}, "saved_summary": saved_summary}
+
+
+@api.post("/resume")
+async def resume(bigs_file: UploadFile = File(...), littles_file: UploadFile = File(...),
+                 results_file: UploadFile = File(...)):
+    bigs, littles, errors, warnings = await _load(bigs_file, littles_file)
+    raw, error = await _read_upload(results_file, "Saved results")
+    if error:
+        errors.append(error)
+    if errors:
+        raise HTTPException(422, detail={"errors": errors, "warnings": warnings})
+    rows, errors = parse_saved_results(raw, bigs, littles)
+    if errors:
+        raise HTTPException(422, detail={"errors": errors, "warnings": warnings})
+    result = restore_results(bigs, littles, rows)
+    result["warnings"] = warnings
+    return result
 
 
 @api.post("/match")

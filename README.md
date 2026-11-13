@@ -19,6 +19,13 @@ Each person runs the app on their own computer. Matching results are returned to
 the browser without being saved by the backend. Export a CSV to keep your results
 before closing or refreshing the page.
 
+To resume later, choose **Continue where you left off** on the upload screen.
+Upload the original bigs CSV, original littles CSV, and the complete CSV saved
+with **Export CSV**. The app restores assignments, unmatched people, lock states,
+and explanations without recalculating. The files are checked for missing or
+unknown participants, duplicate assignments, and capacity conflicts. Recalculate
+unlocked matches only when you want the matching algorithm to run again.
+
 For frontend development, run `npm --prefix application/backend run dev` in a
 second terminal and open the URL Vite prints. Vite forwards `/api` requests to
 FastAPI on port 8000. FastAPI also serves `/api` routes for the built frontend;

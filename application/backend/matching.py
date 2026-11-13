@@ -11,6 +11,7 @@ class Pair:
     br: int  # rank the big gave the little
     lr: int  # rank the little gave the big
     locked: bool = False
+    saved_reason: str | None = None
 
     @property
     def tier(self):
@@ -30,7 +31,7 @@ def _p(person):
     return {"name": person.name, "email": person.email}
 
 
-def run_matching(bigs, littles, locked=None):
+def run_matching(bigs, littles, locked=None, *, saved=None):
     little_by_key = {l.key: l for l in littles}
 
     # Rule 2: only mutual rankings are candidate pairs.
@@ -52,27 +53,31 @@ def run_matching(bigs, littles, locked=None):
     # Reviewer-locked pairs are placed first and never changed by the algorithm.
     big_by_email = {b.email.lower(): b for b in bigs}
     little_by_email = {l.email.lower(): l for l in littles}
-    for item in locked or []:
+    for item in (saved if saved is not None else locked or []):
         b = big_by_email.get(str(item.get("big", "")).lower())
         l = little_by_email.get(str(item.get("little", "")).lower())
         if not b or not l or l.key in little_big or len(big_littles.get(b.key, [])) >= 2:
             continue
         br = b.prefs.index(l.key) + 1 if l.key in b.prefs else 0
         lr = l.prefs.index(b.key) + 1 if b.key in l.prefs else 0
-        assign(Pair(b, l, br, lr, True), len(big_littles.get(b.key, [])) == 1)
+        assign(Pair(b, l, br, lr, bool(item.get("locked")) if saved is not None else True,
+                    item.get("reason", "Restored from saved results.") if saved is not None else None),
+               len(big_littles.get(b.key, [])) == 1)
 
     # Pass 1: one-to-one matches, best tier first.
-    for p in pairs:
+    for p in (pairs if saved is None else []):
         if p.big.key not in big_littles and p.little.key not in little_big:
             assign(p, False)
 
     # Pass 2: twins. Only after all singles; little must be in the big's top 5.
-    for p in pairs:
+    for p in (pairs if saved is None else []):
         if (p.big.takes_twins and len(big_littles.get(p.big.key, [])) == 1
                 and p.little.key not in little_big and p.br <= TWIN_MAX_RANK):
             assign(p, True)
 
     def reason(p, is_twin):
+        if p.saved_reason is not None:
+            return p.saved_reason
         if p.locked:
             rk = lambda n: f"#{n}" if n else "not ranked"
             return (f"Locked by reviewer. {p.big.name} ranked {p.little.name}: {rk(p.br)}; "
